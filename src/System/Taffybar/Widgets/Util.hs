@@ -35,16 +35,16 @@ attachPopup :: (WidgetClass w) => w -- ^ The widget to set as popup.
             -> Window         -- ^ The window to attach the popup to.
             -> IO ()
 attachPopup widget title window = do
+  Just topLevel <- widgetGetAncestor widget gTypeWindow
+  let topLevelWindow = castToWindow topLevel
   set window [ windowTitle := title
              , windowTypeHint := WindowTypeHintTooltip
              , windowSkipTaskbarHint := True
+             , windowSkipPagerHint := True
+             , windowTransientFor := topLevelWindow
              ]
-  windowSetSkipPagerHint window True
   windowSetKeepAbove window True
   windowStick window
-  Just topLevel <- widgetGetAncestor widget gTypeWindow
-  let topLevelWindow = castToWindow topLevel
-  windowSetTransientFor window topLevelWindow
 
 -- | Display the given popup widget (previously prepared using the
 -- 'attachPopup' function) immediately beneath (or above) the given
@@ -55,7 +55,7 @@ displayPopup :: (WidgetClass w) => w -- ^ The popup widget.
 displayPopup widget window = do
   windowSetPosition window WinPosMouse
   (x, y ) <- windowGetPosition window
-  (_, y') <- widgetGetSize widget
+  y' <- widgetGetAllocatedHeight widget
   widgetShowAll window
   if y > y'
     then windowMove window x (y - y')

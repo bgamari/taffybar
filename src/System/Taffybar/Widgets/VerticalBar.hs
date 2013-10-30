@@ -107,14 +107,14 @@ renderBar pct cfg width height = do
   rectangle 0 0 activeWidth activeHeight
   fill
 
-drawBar :: MVar VerticalBarState -> DrawingArea -> IO ()
+drawBar :: MVar VerticalBarState -> DrawingArea -> Render ()
 drawBar mv drawArea = do
-  (w, h) <- widgetGetSize drawArea
-  drawWin <- widgetGetDrawWindow drawArea
-  s <- readMVar mv
+  w <- liftIO $ widgetGetAllocatedWidth drawArea
+  h <- liftIO $ widgetGetAllocatedHeight drawArea
+  s <- liftIO $ readMVar mv
   let pct = barPercent s
-  modifyMVar_ mv (\s' -> return s' { barIsBootstrapped = True })
-  renderWithDrawable drawWin (renderBar pct (barConfig s) w h)
+  liftIO $ modifyMVar_ mv (\s' -> return s' { barIsBootstrapped = True })
+  renderBar pct (barConfig s) w h
 
 verticalBarNew :: BarConfig -> IO (Widget, VerticalBarHandle)
 verticalBarNew cfg = do
@@ -127,7 +127,7 @@ verticalBarNew cfg = do
                                  }
 
   widgetSetSizeRequest drawArea (barWidth cfg) (-1)
-  _ <- on drawArea exposeEvent $ tryEvent $ liftIO (drawBar mv drawArea)
+  _ <- on drawArea draw $ drawBar mv drawArea
 
   box <- hBoxNew False 1
   boxPackStart box drawArea PackGrow 0

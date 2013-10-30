@@ -59,8 +59,8 @@ reqSongInfo w client = do
       let status = (unpack . unpack) (methodReturnBody reply' !! 0) :: String
       case status of
         "Playing" -> postGUIAsync $ widgetShowAll w
-        "Paused"  -> postGUIAsync $ widgetHideAll w
-        "Stopped" -> postGUIAsync $ widgetHideAll w
+        "Paused"  -> postGUIAsync $ widgetHide w
+        "Stopped" -> postGUIAsync $ widgetHide w
         _         -> return ()
 
 getProperty :: Client -> String -> String -> IO MethodReturn
@@ -87,8 +87,8 @@ updatePlaybackStatus w items = do
     Just a -> do
       case (unpack . unpack) a :: String of
         "Playing" -> postGUIAsync $ widgetShowAll w
-        "Paused"  -> postGUIAsync $ widgetHideAll w
-        "Stopped" -> postGUIAsync $ widgetHideAll w
+        "Paused"  -> postGUIAsync $ widgetHide w
+        "Stopped" -> postGUIAsync $ widgetHide w
         _         -> return ()
     Nothing -> do
       return ()

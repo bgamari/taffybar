@@ -238,7 +238,7 @@ taffybarMain cfg = do
   windowMove window x (y + case barPosition cfg of
                              Top    -> 0
                              Bottom -> h - barHeight cfg)
-  _ <- onRealize window $ setStrutProperties window
+  _ <- on window realize $ setStrutProperties window
                             $ strutProperties (barPosition cfg)
                                               (barHeight cfg)
                                               monitorSize

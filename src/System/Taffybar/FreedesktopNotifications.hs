@@ -215,7 +215,7 @@ displayThread s = forever $ do
   _ <- readChan (noteChan s)
   cur <- atomically $ readTVar (noteCurrent s)
   case cur of
-    Nothing -> postGUIAsync (widgetHideAll (noteContainer s))
+    Nothing -> postGUIAsync (widgetHide (noteContainer s))
     Just n -> postGUIAsync $ do
       labelSetMarkup (noteWidget s) (formatMessage s n)
       widgetShowAll (noteContainer s)
@@ -290,7 +290,7 @@ notifyAreaNew cfg = do
 
   containerAdd frame box
 
-  widgetHideAll frame
+  widgetHide frame
 
   istate <- initialNoteState (toWidget frame) textArea cfg
   _ <- on button buttonReleaseEvent (userCancel istate)

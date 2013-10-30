@@ -122,7 +122,7 @@ createSelector ref = do
 
     _ <- M.treeViewAppendColumn view column
     sel <- M.treeViewGetSelection view
-    _ <- M.onSelectionChanged sel $ do
+    _ <- on view M.cursorChanged $ do
       handlePick sel list handles
       killSelector selector ref
     set selector [ containerChild := view ]

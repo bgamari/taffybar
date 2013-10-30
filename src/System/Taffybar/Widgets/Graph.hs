@@ -155,21 +155,21 @@ renderGraph hists cfg w h xStep = do
 
   mapM_ renderDataSet histsAndColors
 
-drawBorder :: MVar GraphState -> DrawingArea -> IO ()
+drawBorder :: MVar GraphState -> DrawingArea -> Render ()
 drawBorder mv drawArea = do
-  (w, h) <- widgetGetSize drawArea
-  drawWin <- widgetGetDrawWindow drawArea
-  s <- readMVar mv
+  w <- liftIO $ widgetGetAllocatedWidth drawArea
+  h <- liftIO $ widgetGetAllocatedHeight drawArea
+  s <- liftIO $ readMVar mv
   let cfg = graphConfig s
-  renderWithDrawable drawWin (renderFrameAndBackground cfg w h)
-  modifyMVar_ mv (\s' -> return s' { graphIsBootstrapped = True })
+  renderFrameAndBackground cfg w h
+  liftIO $ modifyMVar_ mv (\s' -> return s' { graphIsBootstrapped = True })
   return ()
 
-drawGraph :: MVar GraphState -> DrawingArea -> IO ()
+drawGraph :: MVar GraphState -> DrawingArea -> Render ()
 drawGraph mv drawArea = do
-  (w, h) <- widgetGetSize drawArea
-  drawWin <- widgetGetDrawWindow drawArea
-  s <- readMVar mv
+  w <- liftIO $ widgetGetAllocatedWidth drawArea
+  h <- liftIO $ widgetGetAllocatedHeight drawArea
+  s <- liftIO $ readMVar mv
   let hist = graphHistory s
       cfg = graphConfig s
       histSize = graphHistorySize cfg
@@ -178,8 +178,8 @@ drawGraph mv drawArea = do
       xStep = fromIntegral w / fromIntegral (histSize - 1)
 
   case hist of
-    [] -> renderWithDrawable drawWin (renderFrameAndBackground cfg w h)
-    _ -> renderWithDrawable drawWin (renderGraph hist cfg w h xStep)
+    [] -> renderFrameAndBackground cfg w h
+    _ -> renderGraph hist cfg w h xStep
 
 graphNew :: GraphConfig -> IO (Widget, GraphHandle)
 graphNew cfg = do
@@ -191,8 +191,8 @@ graphNew cfg = do
                            }
 
   widgetSetSizeRequest drawArea (graphWidth cfg) (-1)
-  _ <- on drawArea exposeEvent $ tryEvent $ liftIO (drawGraph mv drawArea)
-  _ <- on drawArea realize $ liftIO (drawBorder mv drawArea)
+  _ <- on drawArea draw $ drawGraph mv drawArea
+  -- _ <- on drawArea draw $ liftIO (drawBorder mv drawArea)
   box <- hBoxNew False 1
 
   case graphLabel cfg of
