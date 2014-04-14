@@ -129,6 +129,8 @@ import qualified Config.Dyre as Dyre
 import System.Environment.XDG.BaseDir ( getUserConfigFile )
 import System.FilePath ( (</>) )
 import Graphics.UI.Gtk
+import Graphics.UI.Gtk.General.CssProvider
+import Graphics.UI.Gtk.General.StyleContext
 import Text.Printf
 
 import Paths_taffybar ( getDataDir )
@@ -213,9 +215,15 @@ taffybarMain cfg = do
   -- bar (by design) to ignore the real GTK theme and just use the
   -- provided minimal theme to set the background and text colors.
   -- Users can override this default.
-  defaultGtkConfig <- getDefaultConfigFile "taffybar.rc"
-  userGtkConfig <- getUserConfigFile "taffybar" "taffybar.rc"
-  rcSetDefaultFiles [ defaultGtkConfig, userGtkConfig ]
+  defaultGtkConfig <- getDefaultConfigFile "taffybar.css"
+  defCssProvider <- cssProviderNew
+  cssProviderLoadFromPath defCssProvider defaultGtkConfig
+  print defaultGtkConfig
+
+  userGtkConfig <- getUserConfigFile "taffybar" "taffybar.css"
+  userCssProvider <- cssProviderNew
+  cssProviderLoadFromPath userCssProvider userGtkConfig
+  print userGtkConfig
 
   _ <- initGUI
 
@@ -231,6 +239,9 @@ taffybarMain cfg = do
     True -> return $ allMonitorSizes !! monitorNumber cfg
 
   window <- windowNew
+  styleContext <- widgetGetStyleContext window
+  styleContextAddProvider styleContext defCssProvider 1
+  styleContextAddProvider styleContext userCssProvider 1
   widgetSetName window "Taffybar"
   let Rectangle x y w h = monitorSize
   windowSetTypeHint window WindowTypeHintDock
@@ -256,7 +267,7 @@ taffybarMain cfg = do
             widgetSetSizeRequest wid (-1) (barHeight cfg)
             boxPackEnd box wid PackNatural 0) (endWidgets cfg)
 
-  _ <- on box sizeRequest $ return (Requisition w (barHeight cfg))
+  -- _ <- on box sizeRequest $ return (Requisition w (barHeight cfg))
 
   widgetShow window
   widgetShow box
