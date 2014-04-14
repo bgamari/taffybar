@@ -53,20 +53,20 @@ taffybarEscape = escapeMarkup
 
 -- | The same as the default PP in XMonad.Hooks.DynamicLog
 taffybarDefaultPP :: PP
-taffybarDefaultPP = def { ppCurrent         = taffybarEscape . wrap "[" "]"
-                        , ppVisible         = taffybarEscape . wrap "<" ">"
-                        , ppHidden          = taffybarEscape
-                        , ppHiddenNoWindows = taffybarEscape
-                        , ppUrgent          = taffybarEscape
+taffybarDefaultPP = def { ppCurrent         = const $ taffybarEscape . wrap "[" "]"
+                        , ppVisible         = const $ taffybarEscape . wrap "<" ">"
+                        , ppHidden          = const $ taffybarEscape
+                        , ppHiddenNoWindows = const $ taffybarEscape
+                        , ppUrgent          = const $ taffybarEscape
                         , ppTitle           = taffybarEscape . shorten 80
                         , ppLayout          = taffybarEscape
                         }
 -- | The same as xmobarPP in XMonad.Hooks.DynamicLog
 taffybarPP :: PP
-taffybarPP = taffybarDefaultPP { ppCurrent = taffybarColor "yellow" "" . wrap "[" "]"
+taffybarPP = taffybarDefaultPP { ppCurrent = const $ taffybarColor "yellow" "" . wrap "[" "]"
                                , ppTitle   = taffybarColor "green"  "" . shorten 40
-                               , ppVisible = wrap "(" ")"
-                               , ppUrgent  = taffybarColor "red" "yellow"
+                               , ppVisible = const $ wrap "(" ")"
+                               , ppUrgent  = const $ taffybarColor "red" "yellow"
                                }
 
 
