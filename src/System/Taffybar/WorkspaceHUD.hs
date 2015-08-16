@@ -24,6 +24,7 @@ module System.Taffybar.WorkspaceHUD (
   WorkspaceHUDConfig(..),
   WorkspaceState(..),
   WorkspaceUnderlineController(..),
+  WorkspaceHUDConfig(..),
   WorkspaceWidgetController(..),
   IconController(..),
   buildBorderButtonController,
@@ -55,6 +56,7 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
 import           Control.RateLimit
+import           Data.Functor.Identity
 import qualified Data.Char as S
 import qualified Data.Foldable as F
 import           Data.List (intersect, sortBy)
@@ -76,7 +78,8 @@ import           System.Information.EWMHDesktopInfo
 import           System.Information.SafeX11
 import           System.Information.X11DesktopInfo
 import           System.Taffybar.IconImages
-import           System.Taffybar.Pager
+import           System.Taffybar.Pager hiding (WSVisibility(..))
+import qualified System.Taffybar.Pager as Pager
 import           Text.Printf
 
 data WorkspaceState
@@ -177,21 +180,18 @@ data WorkspaceHUDConfig =
 
 hudFromPagerConfig :: PagerConfig -> WorkspaceHUDConfig
 hudFromPagerConfig pagerConfig =
-  let updater workspace
-        | any windowUrgent ws = urgentWorkspace pagerConfig name
-        | otherwise =
-          let getter =
-                case state of
-                  Urgent -> urgentWorkspace
-                  Visible -> visibleWorkspace
-                  Active -> activeWorkspace
-                  Hidden -> hiddenWorkspace
-                  Empty -> emptyWorkspace
-          in getter pagerConfig name
-        where
-          ws = windows workspace
-          name = workspaceName workspace
-          state = workspaceState workspace
+  let updater workspace = runIdentity $ markupWorkspaces pagerConfig (Identity wsinfo)
+          where
+            wsinfo = WSInfo { wsiName = workspaceName workspace
+                            , wsiWindows = length $ windows workspace
+                            , wsiVisibility = case workspaceState workspace of
+                                                Urgent -> Pager.Hidden
+                                                Visible -> Pager.Visible
+                                                Active -> Pager.Active
+                                                Hidden -> Pager.Hidden
+                                                Empty -> Pager.Hidden
+                            , wsiUrgent = workspaceState workspace == Urgent
+                            }
       padded =
         if workspacePad pagerConfig
           then prefixSpace . updater
