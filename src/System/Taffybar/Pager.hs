@@ -28,10 +28,16 @@
 --
 -----------------------------------------------------------------------------
 
+{-# LANGUAGE RankNTypes #-}
+
 module System.Taffybar.Pager
   ( Pager (..)
   , PagerConfig (..)
   , PagerIO
+  , Markup
+  , WorkspaceInfo(..)
+  , WSVisibility(..)
+  , wsiEmpty
   , defaultPagerConfig
   , pagerNew
   , subscribe
@@ -59,16 +65,14 @@ type Listener = Event -> IO ()
 type Filter = Atom
 type SubscriptionList = IORef [(Listener, Filter)]
 
+type Markup = String
+
 -- | Structure contanining functions to customize the pretty printing of
 -- different widget elements.
 data PagerConfig = PagerConfig
   { activeWindow     :: String -> String -- ^ the name of the active window.
   , activeLayout     :: String -> String -- ^ the currently active layout.
-  , activeWorkspace  :: String -> String -- ^ the currently active workspace.
-  , hiddenWorkspace  :: String -> String -- ^ inactive workspace with windows.
-  , emptyWorkspace   :: String -> String -- ^ inactive workspace with no windows.
-  , visibleWorkspace :: String -> String -- ^ all other visible workspaces (Xinerama or XRandR).
-  , urgentWorkspace  :: String -> String -- ^ workspaces containing windows with the urgency hint set.
+  , markupWorkspaces :: forall f. Traversable f => f WorkspaceInfo -> f Markup -- ^ the currently active workspace.
   , widgetSep        :: String           -- ^ separator to use between desktop widgets in 'TaffyPager'.
   , workspaceBorder  :: Bool             -- ^ wrap workspace buttons in a frame
   , workspaceGap     :: Int              -- ^ space in pixels between workspace buttons
@@ -87,6 +91,23 @@ data Pager = Pager
   , pagerX11ContextVar :: IORef X11Context
   }
 
+-- | Is a workspace visible?
+data WSVisibility = Active   -- ^ workspace is active
+                  | Visible  -- ^ workspace is visible
+                  | Hidden   -- ^ workspace is not visible
+                  deriving (Show, Ord, Eq, Bounded, Enum)
+
+-- | Information necessary to produce a formatted label for a workspace
+data WorkspaceInfo = WSInfo { wsiName       :: String -- ^ the name of the workspace
+                            , wsiWindows    :: Int    -- ^ how many windows are on the workspace?
+                            , wsiVisibility :: WSVisibility -- ^ is the workspace visible?
+                            , wsiUrgent     :: Bool   -- ^ do any of the windows have the urgent hint set?
+                            }
+
+-- | Does a workspace have any windows in it?
+wsiEmpty :: WorkspaceInfo -> Bool
+wsiEmpty = (==0) . wsiWindows
+
 type PagerIO a = ReaderT Pager IO a
 
 liftPagerX11 :: X11Property a -> PagerIO a
@@ -102,11 +123,7 @@ defaultPagerConfig :: PagerConfig
 defaultPagerConfig   = PagerConfig
   { activeWindow     = escape . shorten 40
   , activeLayout     = escape
-  , activeWorkspace  = colorize "yellow" "" . wrap "[" "]" . escape
-  , hiddenWorkspace  = escape
-  , emptyWorkspace   = const ""
-  , visibleWorkspace = wrap "(" ")" . escape
-  , urgentWorkspace  = colorize "red" "yellow" . escape
+  , markupWorkspaces = defaultMarkupWorkspaces
   , widgetSep        = " : "
   , workspaceBorder  = False
   , workspaceGap     = 0
@@ -117,6 +134,17 @@ defaultPagerConfig   = PagerConfig
   , preferCustomIcon = False
   , customIcon       = \_ _ -> Nothing
   }
+
+-- | Default workspace markup
+defaultMarkupWorkspaces :: Traversable f => f WorkspaceInfo -> f Markup
+defaultMarkupWorkspaces = fmap f
+  where
+    f ws@(WSInfo {wsiName=name, wsiVisibility=vis})
+      | wsiUrgent ws   = colorize "red" "yellow" $ escape name
+      | Active <- vis  = colorize "yellow" "" $ wrap "[" "]" $ escape name
+      | Visible <- vis = wrap "(" ")" $ escape name
+      | wsiEmpty ws    = escape name
+      | otherwise      = escape name
 
 -- | Creates a new Pager component (wrapped in the IO Monad) that can be
 -- used by widgets for subscribing X11 events.

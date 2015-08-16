@@ -1,4 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
+
 -----------------------------------------------------------------------------
 -- |
 -- Module      : System.Taffybar.WorkspaceSwitcher
@@ -30,9 +32,11 @@ import Control.Applicative
 import qualified Control.Concurrent.MVar as MV
 import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.List ((\\), findIndices, sortBy)
+import Data.List (sortBy)
+import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Ord (comparing)
+import Data.Traversable (foldMapDefault)
 import Foreign.C.Types (CUChar(..))
 import Foreign.Marshal.Array (newArray)
 import qualified Graphics.UI.Gtk as Gtk
@@ -43,16 +47,19 @@ import Prelude
 import System.Taffybar.IconImages hiding (selectEWMHIcon)
 import System.Taffybar.Pager
 import System.Information.EWMHDesktopInfo
+import System.Information.X11DesktopInfo
 
-type Desktop = [Workspace]
+type Desktop = M.Map WorkspaceIdx Workspace
+
 data Workspace = Workspace { label     :: Gtk.Label
                            , image     :: Gtk.Image
                            , border    :: Gtk.EventBox
                            , container :: Gtk.EventBox
                            , name      :: String
+                           , visibility :: WSVisibility
                            , urgent    :: Bool
                            }
-type WindowSet = [(WorkspaceIdx, [X11Window])]
+
 type WindowInfo = Maybe (String, String, [EWMHIcon])
 type CustomIconF = String -> String -> Maybe FilePath
 type ImageChoice = (Maybe EWMHIcon, Maybe FilePath, Maybe ColorRGBA)
@@ -114,18 +121,17 @@ wspaceSwitcherNew pager = do
 
   return $ Gtk.toWidget switcher
 
--- | List of indices of all available workspaces.
-allWorkspaces :: Desktop -> [WorkspaceIdx]
-allWorkspaces desktop = map WSIdx [0 .. length desktop - 1]
-
--- | List of indices of all the workspaces that contain at least one window.
-nonEmptyWorkspaces :: IO [WorkspaceIdx]
-nonEmptyWorkspaces = withDefaultCtx $ mapM getWorkspace =<< getWindows
+-- | List the workspaces and their windows
+workspaceWindows :: X11Property (M.Map WorkspaceIdx [X11Window])
+workspaceWindows = do
+    windows <- getWindows
+    wss <- mapM (\win->getWorkspace win >>= return . flip M.singleton [win]) windows
+    return $ M.unionsWith (++) wss
 
 -- | Return a list of Workspace data instances.
 getDesktop :: Pager -> IO Desktop
 getDesktop pager = do
-  names  <- map snd <$> withDefaultCtx getWorkspaceNames
+  names  <- M.fromList <$> withDefaultCtx getWorkspaceNames
   mapM (createWorkspace pager) names
 
 -- | Return a Workspace data instance, with the unmarked name,
@@ -141,7 +147,7 @@ createWorkspace _pager wname = do
   Gtk.eventBoxSetVisibleWindow brd useBorder
   Gtk.containerSetBorderWidth con (if useBorder then 2 else 0)
 
-  return $ Workspace lbl img brd con wname False
+  return $ Workspace lbl img brd con wname Hidden False
 
 -- | Take an existing Desktop IORef and update it if necessary, store the result
 -- in the IORef, then return True if the reference was actually updated, False
@@ -150,7 +156,7 @@ updateDesktop :: Pager -> MV.MVar Desktop -> IO Bool
 updateDesktop pager deskRef = do
   wsnames <- withDefaultCtx getWorkspaceNames
   MV.modifyMVar deskRef $ \desktop ->
-    case map snd wsnames /= map name desktop of
+    case length wsnames /= length desktop of
       True -> do
         desk' <- getDesktop pager
         return (desk', True)
@@ -162,7 +168,7 @@ populateSwitcher :: Gtk.BoxClass box => box -> MV.MVar Desktop -> IO ()
 populateSwitcher switcher deskRef = do
   containerClear switcher
   desktop <- MV.readMVar deskRef
-  mapM_ (addButton switcher desktop) (allWorkspaces desktop)
+  _ <- M.traverseWithKey (\wsIdx _ -> addButton switcher desktop wsIdx) desktop
   Gtk.widgetShowAll switcher
 
 -- | Build a suitable callback function that can be registered as Listener
@@ -170,12 +176,24 @@ populateSwitcher switcher deskRef = do
 -- the active workspace in the desktop.
 activeCallback :: PagerConfig -> MV.MVar Desktop -> Event -> IO ()
 activeCallback cfg deskRef _ = Gtk.postGUIAsync $ do
+  visible <- withDefaultCtx getVisibleWorkspaces
+  case visible of
+    active:_ -> do
+      toggleUrgent deskRef active False
+      let setVisible wsIdx ws = ws { visibility = vis }
+            where
+              vis | wsIdx == active      = Active
+                  | wsIdx `elem` visible = Visible
+                  | otherwise            = Hidden
+      MV.modifyMVar_ deskRef (pure . M.mapWithKey setVisible)
+    _ -> return ()
+
   curr <- withDefaultCtx getVisibleWorkspaces
   desktop <- MV.readMVar deskRef
   case curr of
     visible : _ | Just ws <- getWS desktop visible -> do
       when (urgent ws) $ toggleUrgent deskRef visible False
-      transition cfg desktop curr
+      transition cfg desktop
     _ -> return ()
 
 -- | Build a suitable callback function that can be registered as Listener
@@ -187,14 +205,13 @@ urgentCallback cfg deskRef event = Gtk.postGUIAsync $ do
   desktop <- MV.readMVar deskRef
   withDefaultCtx $ do
     let window = ev_window event
-        pad = if workspacePad cfg then prefixSpace else id
     isUrgent <- isWindowUrgent window
     when isUrgent $ do
       this <- getCurrentWorkspace
       that <- getWorkspace window
       when (this /= that) $ liftIO $ do
         toggleUrgent deskRef that True
-        mark desktop pad (urgentWorkspace cfg) that
+        transition cfg desktop
 
 -- | Build a suitable callback function that can be registered as Listener
 -- of "_NET_NUMBER_OF_DESKTOPS" standard events. It will handle dynamically
@@ -219,9 +236,7 @@ createLabel markup = do
 
 -- | Get the workspace corresponding to the given 'WorkspaceIdx' on the given desktop
 getWS :: Desktop -> WorkspaceIdx -> Maybe Workspace
-getWS desktop (WSIdx idx)
-  | length desktop > idx = Just (desktop !! idx)
-  | otherwise            = Nothing
+getWS desktop idx = idx `M.lookup` desktop
 
 -- | Build a new clickable event box containing the Label widget that
 -- corresponds to the given index, and add it to the given container.
@@ -260,30 +275,44 @@ addButton switcherHbox desktop idx
 
   | otherwise = return ()
 
+newtype AssocList a b = AList {getAList :: [(a,b)]}
+
+instance Functor (AssocList a) where
+  fmap f (AList xs) = AList $ map (\(a,b) -> (a, f b)) xs
+
+instance Foldable (AssocList a) where
+  foldMap = foldMapDefault
+
+instance Traversable (AssocList a) where
+  traverse f (AList xs) = AList `fmap` traverse (\(a,b)->(a,) `fmap` f b) xs
+
 -- | Re-mark all workspace labels.
 transition :: PagerConfig    -- ^ Configuration settings.
            -> Desktop        -- ^ All available Labels with their default values.
-           -> [WorkspaceIdx] -- ^ Currently visible workspaces (first is active).
            -> IO ()
-transition cfg desktop wss = do
-  nonEmpty <- fmap (filter (>=WSIdx 0)) nonEmptyWorkspaces
-  let urgentWs = map WSIdx $ findIndices urgent desktop
-      allWs    = (allWorkspaces desktop) \\ urgentWs
-      nonEmptyWs = nonEmpty \\ urgentWs
+transition cfg desktop = do
+  windowCounts <- fmap length <$> withDefaultCtx workspaceWindows
+  let toWSInfo wsIdx ws =
+        WSInfo { wsiName       = name ws
+               , wsiWindows    = M.findWithDefault 0 wsIdx windowCounts
+               , wsiVisibility = visibility ws
+               , wsiUrgent     = urgent ws
+               }
+  let markup :: AssocList (WorkspaceIdx, Workspace) Markup
+      markup = markupWorkspaces cfg
+               $ AList $ map (\(wsIdx, ws) -> ((wsIdx, ws), toWSInfo wsIdx ws)) $ M.toList desktop
       pad = if workspacePad cfg then prefixSpace else id
-  mapM_ (mark desktop pad $ hiddenWorkspace cfg) nonEmptyWs
-  mapM_ (setWidgetNames desktop "hidden") nonEmptyWs
-  mapM_ (mark desktop pad $ emptyWorkspace cfg) (allWs \\ nonEmpty)
-  mapM_ (setWidgetNames desktop "empty") (allWs \\ nonEmpty)
-  case wss of
-    active:rest -> do
-      mark desktop pad (activeWorkspace cfg) active
-      setWidgetNames desktop "active" active
-      mapM_ (mark desktop pad $ visibleWorkspace cfg) rest
-      mapM_ (setWidgetNames desktop "visible") rest
-    _ -> return ()
-  mapM_ (mark desktop pad $ urgentWorkspace cfg) urgentWs
-  mapM_ (setWidgetNames desktop "urgent") urgentWs
+  Gtk.postGUIAsync $ forM_ (getAList markup) $ \((wsIdx, ws), m) -> do
+      Gtk.labelSetMarkup (label ws) (pad m)
+      let widgetName =
+              case visibility ws of
+                  Active -> "active"
+                  _ | urgent ws -> "urgent"
+                  Visible -> "visible"
+                  _ | 0 <- M.findWithDefault 0 wsIdx windowCounts -> "empty"
+                  Hidden -> "hidden"
+
+      setWidgetNames widgetName ws
 
   let useImg = useImages cfg
       fillEmpty = fillEmptyImages cfg
@@ -295,19 +324,16 @@ transition cfg desktop wss = do
 -- | Update the GTK images using X properties.
 updateImages :: Desktop -> Int -> Bool -> Bool -> CustomIconF -> IO ()
 updateImages desktop imgSize fillEmpty preferCustom customIconF = do
-  windowSet <- getWindowSet (allWorkspaces desktop)
-  lastWinInfo <- getLastWindowInfo windowSet
-  let images = map image desktop
-      fillColor = if fillEmpty then Just (0, 0, 0, 0) else Nothing
-      imageChoices = getImageChoices lastWinInfo customIconF fillColor imgSize
-  zipWithM_ (setImage imgSize preferCustom) images imageChoices
+  windows <- withDefaultCtx workspaceWindows
+  lastWinInfo <- getLastWindowInfo windows
+  let fillColor = if fillEmpty then Just (0, 0, 0, 0) else Nothing
 
--- | Get EWMHIcons, custom icon files, and fill colors based on the window info.
-getImageChoices :: [WindowInfo] -> CustomIconF -> Maybe ColorRGBA -> Int -> [ImageChoice]
-getImageChoices lastWinInfo customIconF fillColor imgSize = zip3 icons files colors
-  where icons = map (selectEWMHIcon imgSize) lastWinInfo
-        files = map (selectCustomIconFile customIconF) lastWinInfo
-        colors = map (\_ -> fillColor) lastWinInfo
+  void $ flip M.traverseWithKey desktop $ \wsIdx ws -> do
+      let winInfo = join $ M.lookup wsIdx lastWinInfo
+          imgChoice = ( selectEWMHIcon imgSize winInfo
+                      , selectCustomIconFile customIconF winInfo
+                      , fillColor )
+      void $ setImage imgSize preferCustom (image ws) imgChoice
 
 -- | Select the icon with the smallest height that is larger than imgSize,
 -- or if none such icons exist, select the icon with the largest height.
@@ -371,12 +397,10 @@ setImageFromColor img imgSize (r,g,b,a) = do
   Gtk.imageSetFromPixbuf img scaledPixbuf
 
 -- | Get window title, class, and icons for the last window in each workspace.
-getLastWindowInfo :: WindowSet -> IO [WindowInfo]
-getLastWindowInfo windowSet = mapM getWindowInfo lastWins
-  where wsIdxs = map fst windowSet
-        lastWins = map lastWin wsIdxs
-        wins wsIdx = snd $ head $ filter ((==wsIdx).fst) windowSet
-        lastWin wsIdx = listToMaybe $ reverse $ wins wsIdx
+getLastWindowInfo :: M.Map WorkspaceIdx [X11Window]
+                  -> IO (M.Map WorkspaceIdx WindowInfo)
+getLastWindowInfo = mapM (getWindowInfo . lastWin)
+  where lastWin = listToMaybe . reverse
 
 -- | Get window title, class, and EWMHIcons for the given window.
 getWindowInfo :: Maybe X11Window -> IO WindowInfo
@@ -386,27 +410,6 @@ getWindowInfo (Just w) = withDefaultCtx $ do
   wClass <- getWindowClass w
   wIcon <- getWindowIcons w
   return $ Just (wTitle, wClass, wIcon)
-
--- | Get a list of windows for each workspace.
-getWindowSet :: [WorkspaceIdx] -> IO WindowSet
-getWindowSet wsIdxs = do
-  windows <- withDefaultCtx getWindows
-  workspaces <- mapM (withDefaultCtx.getWorkspace) windows
-  let wsWins = zip workspaces windows
-  return $ map (\wsIdx -> (wsIdx, lookupAll wsIdx wsWins)) wsIdxs
-  where lookupAll x xs = map snd $ filter (((==)x).fst) xs
-
--- | Apply the given marking function to the Label of the workspace with
--- the given index.
-mark :: Desktop            -- ^ List of all available labels.
-     -> (String -> String) -- ^ Padding function.
-     -> (String -> String) -- ^ Marking function.
-     -> WorkspaceIdx       -- ^ Index of the Label to modify.
-     -> IO ()
-mark desktop pad decorate wsIdx
-  | Just ws <- getWS desktop wsIdx =
-    Gtk.postGUIAsync $ Gtk.labelSetMarkup (label ws) $ pad $ decorate (name ws)
-  | otherwise = return ()
 
 -- | Prefix the string with a space unless the string is empty.
 prefixSpace :: String -> String
@@ -418,14 +421,12 @@ prefixSpace s = " " ++ s
 -- image     => Workspace-Image-<WORKSPACE_NAME>-<WORKSPACE_STATE>
 -- container => Workspace-Container-<WORKSPACE_NAME>-<WORKSPACE_STATE>
 -- label     => Workspace-Label-<WORKSPACE_NAME>-<WORKSPACE_STATE>
-setWidgetNames :: Desktop -> String -> WorkspaceIdx -> IO ()
-setWidgetNames desktop workspaceState wsIdx
-  | Just ws <- getWS desktop wsIdx = do
+setWidgetNames :: String -> Workspace -> IO ()
+setWidgetNames workspaceState ws = do
       Gtk.widgetSetName (label ws)     (widgetName "Label"     (name ws))
       Gtk.widgetSetName (image ws)     (widgetName "Image"     (name ws))
       Gtk.widgetSetName (border ws)    (widgetName "Border"    (name ws))
       Gtk.widgetSetName (container ws) (widgetName "Container" (name ws))
-  | otherwise = return ()
   where widgetName widget wsName = "Workspace"
                                    ++ "-" ++ widget
                                    ++ "-" ++ wsName
@@ -446,17 +447,11 @@ switchOne dir end = do
 -- | Modify the Desktop inside the given IORef, so that the Workspace at the
 -- given index has its "urgent" flag set to the given value.
 toggleUrgent :: MV.MVar Desktop -- ^ MVar to modify.
-             -> WorkspaceIdx  -- ^ Index of the Workspace to replace.
-             -> Bool          -- ^ New value of the "urgent" flag.
+             -> WorkspaceIdx    -- ^ Index of the Workspace to replace.
+             -> Bool            -- ^ New value of the "urgent" flag.
              -> IO ()
-toggleUrgent deskRef (WSIdx idx) isUrgent =
-  MV.modifyMVar_ deskRef $ \desktop -> do
-    let ws = desktop !! idx
-    case length desktop > idx of
-      True | isUrgent /= urgent ws -> do
-               let ws' = ws { urgent = isUrgent }
-                   (ys, zs) = splitAt idx desktop
-               case zs of
-                 _ : rest -> return $ ys ++ (ws' : rest)
-                 _ -> return (ys ++ [ws'])
-      _ -> return desktop
+toggleUrgent deskRef idx isUrgent =
+  MV.modifyMVar_ deskRef (pure . M.adjust f idx)
+  where
+    f ws = ws { urgent = isUrgent }
+
