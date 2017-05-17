@@ -312,7 +312,8 @@ transition cfg desktop = do
                   _ | 0 <- M.findWithDefault 0 wsIdx windowCounts -> "empty"
                   Hidden -> "hidden"
 
-      setWidgetNames widgetName ws
+      --setWidgetNames widgetName ws -- this is crazy expensive due to string matching in gtk
+      return ()
 
   let useImg = useImages cfg
       fillEmpty = fillEmptyImages cfg
