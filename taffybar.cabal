@@ -35,6 +35,7 @@ library
                  containers,
                  dbus >= 0.10.7 && < 1.0,
                  directory,
+                 dlist,
                  dyre >= 0.8.6 && < 0.9,
                  enclosed-exceptions >= 1.0.0.1,
                  either >= 4.0.0.0,

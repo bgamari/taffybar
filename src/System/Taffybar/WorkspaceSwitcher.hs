@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -33,10 +34,13 @@ import qualified Control.Concurrent.MVar as MV
 import Control.Monad
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.List (sortBy)
+import qualified Data.DList as DList
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import qualified Data.MultiMap as MM
 import Data.Ord (comparing)
+import Data.Semigroup ((<>))
+import qualified Data.Set as S
 import Data.Traversable (foldMapDefault)
 import Foreign.C.Types (CUChar(..))
 import Foreign.Marshal.Array (newArray)
@@ -127,8 +131,8 @@ wspaceSwitcherNew pager = do
 workspaceWindows :: X11Property (M.Map WorkspaceIdx [X11Window])
 workspaceWindows = do
     windows <- getWindows
-    wss <- mapM (\win->getWorkspace win >>= return . flip M.singleton [win]) windows
-    return $ M.unionsWith (++) wss
+    wss <- mapM (\win->getWorkspace win >>= return . flip M.singleton (DList.singleton win)) windows
+    return $! fmap DList.toList $ M.unionsWith (<>) wss
 
 -- | Return a list of Workspace data instances.
 getDesktop :: Pager -> IO Desktop
@@ -182,12 +186,13 @@ activeCallback cfg deskRef _ = Gtk.postGUIAsync $ do
   case visible of
     active:_ -> do
       toggleUrgent deskRef active False
-      let setVisible wsIdx ws = ws { visibility = vis }
+      let !visibleSet = S.fromList visible
+          setVisible wsIdx ws = ws { visibility = vis }
             where
-              vis | wsIdx == active      = Active
-                  | wsIdx `elem` visible = Visible
-                  | otherwise            = Hidden
-      MV.modifyMVar_ deskRef (pure . M.mapWithKey setVisible)
+              vis | wsIdx == active             = Active
+                  | wsIdx `S.member` visibleSet = Visible
+                  | otherwise                   = Hidden
+      MV.modifyMVar_ deskRef (\x -> pure $! M.mapWithKey setVisible x)
     _ -> return ()
 
   curr <- withDefaultCtx getVisibleWorkspaces
@@ -397,7 +402,8 @@ setImageFromColor img imgSize (r,g,b,a) = do
 getLastWindowInfo :: M.Map WorkspaceIdx [X11Window]
                   -> IO (M.Map WorkspaceIdx WindowInfo)
 getLastWindowInfo = mapM (getWindowInfo . lastWin)
-  where lastWin = listToMaybe . reverse
+  where lastWin [] = Nothing
+        lastWin xs = Just $ last xs
 
 -- | Get window title, class, and EWMHIcons for the given window.
 getWindowInfo :: Maybe X11Window -> IO WindowInfo
@@ -448,7 +454,7 @@ toggleUrgent :: MV.MVar Desktop -- ^ MVar to modify.
              -> Bool            -- ^ New value of the "urgent" flag.
              -> IO ()
 toggleUrgent deskRef idx isUrgent =
-  MV.modifyMVar_ deskRef (pure . M.adjust f idx)
+  MV.modifyMVar_ deskRef (\x -> pure $! M.adjust f idx x)
   where
     f ws = ws { urgent = isUrgent }
 

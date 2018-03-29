@@ -123,10 +123,10 @@ data WSVisibility = Active   -- ^ workspace is active
                   deriving (Show, Ord, Eq, Bounded, Enum)
 
 -- | Information necessary to produce a formatted label for a workspace
-data WorkspaceInfo = WSInfo { wsiName       :: String -- ^ the name of the workspace
-                            , wsiWindows    :: Int    -- ^ how many windows are on the workspace?
-                            , wsiVisibility :: WSVisibility -- ^ is the workspace visible?
-                            , wsiUrgent     :: Bool   -- ^ do any of the windows have the urgent hint set?
+data WorkspaceInfo = WSInfo { wsiName       :: !String -- ^ the name of the workspace
+                            , wsiWindows    :: !Int    -- ^ how many windows are on the workspace?
+                            , wsiVisibility :: !WSVisibility -- ^ is the workspace visible?
+                            , wsiUrgent     :: !Bool   -- ^ do any of the windows have the urgent hint set?
                             }
 
 -- | Does a workspace have any windows in it?
